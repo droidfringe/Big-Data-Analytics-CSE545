@@ -52,17 +52,42 @@ class MyMapReduce:#[TODO]
 
     def partitionFunction(self,k): #[TODO]
         #given a key returns the reduce task to send it
+        if(isinstance(k, (str))):
+            kStr = k
+        elif(isinstance(k, (int))):
+            kStr = hex(k)
+        elif(isinstance(k, (float))):
+            kStr = k.hex()
+        else:
+            print("partitionFunction: key not of type string, int or float")
+            return 0
+        kHashvalue = self.ComputeHashOfString(kStr)
+        #print("Hashvalue of ", k, " is ", kHashvalue)
+        kReduceTaskId = kHashvalue%self.num_reduce_tasks
+        return kReduceTaskId
 
 
     def reduceTask(self, kvs, namenode_fromR): #[TODO]
         #sort all values for each key (can use a list of dictionary)
-
-
+        keyValueDict = dict()
+        for k, v in kvs:
+            try:
+                keyValueDict[k].append(v)
+            except KeyError:
+                keyValueDict[k] = [v]
         #call reducers on each key with a list of values
         #and append the result for each key to namenode_fromR
         #[TODO]
 
-		
+        for k, v in keyValueDict.items():
+            kvReduced = self.reduce(k, v)
+            # If None is returned, do not append to reducer's output
+            # This will be useful in set difference example,
+            # where we want to provide the functionality to skip some keys
+            if kvReduced is not None:
+                namenode_fromR.append(kvReduced)
+        
+
     def runSystem(self): #[TODO]
         #runs the full map-reduce system processes on mrObject
 
@@ -83,11 +108,27 @@ class MyMapReduce:#[TODO]
         #      p.start()  
 		#  (it might be useful to keep the processes in a list)
         #[TODO]
-
+        numItems = len(self.data)
+        chunkSize = int(numItems/self.num_map_tasks)
+        startIdx = 0
+        # Assign the residual k,v pairs to first map task
+        endIdx = chunkSize + numItems%self.num_map_tasks
+        mapProcessesList = []
+        #print(numItems)
+        for idx in range(self.num_map_tasks):
+            #print(startIdx, endIdx)
+            chunk = self.data[startIdx:endIdx]
+            p = Process(target=self.mapTask, args=(chunk,namenode_m2r))
+            mapProcessesList.append(p)
+            p.start()
+            startIdx = endIdx
+            endIdx += chunkSize
 
         #join map task processes back
         #[TODO]
-
+        # Wait for all mappers to finish!!
+        for mapProcess in mapProcessesList:
+            mapProcess.join()
 		
         #print output from map tasks 
         #[DONE]
@@ -98,15 +139,22 @@ class MyMapReduce:#[TODO]
         #into a list of lists, where to_reduce_task[task_num] = [list of kv pairs]
         to_reduce_task = [[] for i in range(self.num_reduce_tasks)] 
         #[TODO]
-
+        for reduceTaskId, kvPair in namenode_m2r:
+            to_reduce_task[reduceTaskId].append(kvPair)
 
         #launch the reduce tasks as a new process for each. 
         #[TODO]
-
+        reduceProcessesList = []
+        for idx in range(self.num_reduce_tasks):
+            p = Process(target=self.reduceTask, args=(to_reduce_task[idx],namenode_fromR))
+            reduceProcessesList.append(p)
+            p.start()
 
         #join the reduce tasks back
         #[TODO]
-
+        # Wait for all reducers to finish!!
+        for reduceProcess in reduceProcessesList:
+            reduceProcess.join()
 		
         #print output from reducer tasks 
         #[DONE]
@@ -116,6 +164,12 @@ class MyMapReduce:#[TODO]
         #return all key-value pairs:
         #[DONE]
         return namenode_fromR
+
+    def ComputeHashOfString(self, string):
+        hashValue = 0
+        for idx in range(0, len(string)):
+            hashValue += (idx+1)*ord(string[idx])
+        return hashValue
 
 
 ##########################################################################
@@ -136,12 +190,53 @@ class WordCountMR(MyMapReduce): #[DONE]
     
     def reduce(self, k, vs): #[DONE]
         return (k, np.sum(vs))        
-    
+
+# In the commented approach below, mappers are doing nothing but passing the data along with little modification
+# to the reducer. The reducers are doing the real job. This approach will not scale
+# As discussed with Prof Schwartz during office hours, this approach was not used in final solution
+'''
+class SetDifferenceMR(MyMapReduce): #[TODO]
+	#contains the map and reduce function for set difference
+	#Assume that the mapper receives the "set" as a list of any primitives or comparable objects
+    def map(self, k, v):
+        mapOutput = []
+        for value in v:
+            mapOutput.append((1, (k, value)))
+        return mapOutput
+
+    def reduce(self, k, vs):
+        Relements = []
+        Selements = dict()
+        setDiff = []
+        for setId, setElement in vs:
+            if setId == 'R':
+                Relements.append(setElement)
+            elif setId == 'S':
+                Selements[setElement] = True
+            else:
+                print('Set id is something other than R or S: ', setId)
+        for element in Relements:
+            if element not in Selements:
+                setDiff.append(element)
+        return ('R', setDiff)
+'''
 
 class SetDifferenceMR(MyMapReduce): #[TODO]
 	#contains the map and reduce function for set difference
 	#Assume that the mapper receives the "set" as a list of any primitives or comparable objects
-	pass
+    def map(self, k, v):
+        mapOutput = []
+        for value in v:
+            mapOutput.append((value, k))
+        return mapOutput
+
+    def reduce(self, k, vs):
+        if 'R' in vs and 'S' not in vs:
+            return k
+        else:
+            # This value will not appear in set difference
+            # So return None
+            return None
 
 
 ##########################################################################
@@ -163,18 +258,16 @@ if __name__ == "__main__": #[DONE: Uncomment peices to test]
 			(10, "Car engines purred and the tires burned.")]
     mrObject = WordCountMR(data, 4, 3)
     mrObject.runSystem()
-             
+
     ####################
     ##run SetDifference
     #(TODO: uncomment when ready to test)
     print("\n\n*****************\n Set Difference\n*****************\n")
-    # data1 = [('R', ['apple', 'orange', 'pear', 'blueberry']),
-	# 		 ('S', ['pear', 'orange', 'strawberry', 'fig', 'tangerine'])]
-	# data2 = [('R', [x for x in range(50) if random() > 0.5]),
-	# 		 ('S', [x for x in range(50) if random() > 0.75])]
-    # mrObject = SetDifferenceMR(data1, 2, 2)
-    # mrObject.runSystem()
-    # mrObject = SetDifferenceMR(data2, 2, 2)
-    # mrObject.runSystem() 
+    data1 = [('R', ['apple', 'orange', 'pear', 'blueberry']), ('S', ['pear', 'orange', 'strawberry', 'fig', 'tangerine'])]
+    data2 = [('R', [x for x in range(50) if random() > 0.5]), ('S', [x for x in range(50) if random() > 0.75])]
+    mrObject = SetDifferenceMR(data1, 2, 2)
+    mrObject.runSystem()
+    mrObject = SetDifferenceMR(data2, 2, 2)
+    mrObject.runSystem() 
 
       
